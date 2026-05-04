@@ -10,7 +10,7 @@ pipeline {
         IMAGE_NAME = "sliding-block-puzzle-game"
         IMAGE_TAG = "${BUILD_NUMBER}"
         KUBECONFIG = '/var/lib/jenkins/.kube/config'
-        NEXUS_URL = "http:/13.204.93.94:8081/repository/puzzlegame"
+        NEXUS_URL = "http://13.204.93.94:8081/repository/puzzlegame"
         RECIPIENTS = "vinodhmaninadh2001@gmail.com"
 
         CLUSTER_NAME = "mycluster"
