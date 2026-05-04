@@ -32,18 +32,21 @@ pipeline {
         }
 
         stage('SonarQube Analysis') {
-            steps {
-                withSonarQubeEnv('sq') {
-                    sh '''
-                    /opt/sonar-scanner/bin/sonar-scanner \
-                    -Dsonar.projectKey=game \
-                    -Dsonar.sources=src \
-                    -Dsonar.projectName=game-App \
-                    -Dsonar.projectVersion=${BUILD_NUMBER}
-                    '''
-                }
+    steps {
+        script {
+            def scannerHome = tool 'sonar-scanner'
+            withSonarQubeEnv('sq') {
+                sh """
+                ${scannerHome}/bin/sonar-scanner \
+                -Dsonar.projectKey=game \
+                -Dsonar.sources=src \
+                -Dsonar.projectName=game-App \
+                -Dsonar.projectVersion=15
+                """
             }
         }
+    }
+}
         
 
 
