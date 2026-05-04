@@ -3,6 +3,9 @@ pipeline {
 
     tools {
         nodejs 'NodeJS18'
+        // Make sure this exists in Global Tool Config
+        // Name must match exactly
+        sonarQubeScanner 'sonar-scanner'
     }
 
     environment {
@@ -10,9 +13,11 @@ pipeline {
         IMAGE_NAME = "sliding-block-puzzle-game"
         IMAGE_TAG = "${BUILD_NUMBER}"
         KUBECONFIG = '/var/lib/jenkins/.kube/config'
-        NEXUS_URL = "http:/13.204.93.94:8081/repository/puzzlegame"
-        RECIPIENTS = "vinodhmaninadh2001@gmail.com"
 
+        // ✅ FIXED URL
+        NEXUS_URL = "http://13.204.93.94:8081/repository/puzzlegame"
+
+        RECIPIENTS = "vinodhmaninadh2001@gmail.com"
         CLUSTER_NAME = "mycluster"
         PROJECT_NAME = "Sliding Puzzle Game"
     }
@@ -33,19 +38,29 @@ pipeline {
 
         stage('SonarQube Analysis') {
             steps {
-                withSonarQubeEnv('sq') {
-                    sh '''
-                    /opt/sonar-scanner/bin/sonar-scanner \
-                    -Dsonar.projectKey=game \
-                    -Dsonar.sources=src \
-                    -Dsonar.projectName=game-App \
-                    -Dsonar.projectVersion=${BUILD_NUMBER}
-                    '''
+                script {
+                    def scannerHome = tool 'sonar-scanner'
+                    withSonarQubeEnv('sq') {
+                        sh """
+                        ${scannerHome}/bin/sonar-scanner \
+                        -Dsonar.projectKey=game \
+                        -Dsonar.sources=src \
+                        -Dsonar.projectName=game-App \
+                        -Dsonar.projectVersion=${BUILD_NUMBER}
+                        """
+                    }
                 }
             }
         }
-        
 
+        // ✅ Optional but recommended
+        stage('Quality Gate') {
+            steps {
+                timeout(time: 2, unit: 'MINUTES') {
+                    waitForQualityGate abortPipeline: false
+                }
+            }
+        }
 
         stage('Build') {
             steps {
@@ -109,7 +124,7 @@ pipeline {
         stage('Deploy to Kubernetes') {
             steps {
                 sh '''
-                aws eks update-kubeconfig --region ap-south-1 --name mycluster
+                aws eks update-kubeconfig --region ap-south-1 --name $CLUSTER_NAME
 
                 kubectl apply -f deployment.yml
                 kubectl apply -f service.yml
@@ -120,11 +135,10 @@ pipeline {
         stage('Install Helm') {
             steps {
                 sh '''
-                if [ ! -f helm ]; then
+                if ! command -v helm &> /dev/null; then
                     curl -LO https://get.helm.sh/helm-v3.14.0-linux-amd64.tar.gz
                     tar -zxvf helm-v3.14.0-linux-amd64.tar.gz
-                    mv linux-amd64/helm ./helm
-                    chmod +x ./helm
+                    mv linux-amd64/helm /usr/local/bin/helm
                 fi
                 '''
             }
@@ -133,40 +147,30 @@ pipeline {
         stage('Deploy Monitoring') {
             steps {
                 sh '''
-                ./helm repo add prometheus-community https://prometheus-community.github.io/helm-charts || true
-                ./helm repo update
+                helm repo add prometheus-community https://prometheus-community.github.io/helm-charts || true
+                helm repo update
 
-                ./helm upgrade --install monitoring prometheus-community/kube-prometheus-stack \
+                helm upgrade --install monitoring prometheus-community/kube-prometheus-stack \
                 --namespace monitoring --create-namespace
                 '''
             }
         }
 
-        stage('Expose Grafana') {
+        stage('Expose Grafana & Prometheus') {
             steps {
                 sh '''
-                echo "Waiting for Grafana..."
                 sleep 30
 
-                kubectl patch svc monitoring-grafana \
-                -n monitoring \
+                kubectl patch svc monitoring-grafana -n monitoring \
                 -p '{"spec": {"type": "LoadBalancer"}}'
-                '''
-            }
-        }
 
-        stage('Expose Prometheus') {
-            steps {
-                sh '''
-                kubectl patch svc monitoring-kube-prometheus-prometheus \
-                -n monitoring \
+                kubectl patch svc monitoring-kube-prometheus-prometheus -n monitoring \
                 -p '{"spec": {"type": "LoadBalancer"}}'
                 '''
             }
         }
     }
 
-    // ===========================
     post {
 
         success {
@@ -174,33 +178,9 @@ pipeline {
 
                 sleep 40
 
-                def APP_URL = ""
-                def GRAFANA_URL = ""
-                def PROM_URL = ""
-
-                for (int i = 0; i < 5; i++) {
-
-                    APP_URL = sh(
-                        script: "kubectl get svc puzzle-game-service -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' || true",
-                        returnStdout: true
-                    ).trim()
-
-                    GRAFANA_URL = sh(
-                        script: "kubectl get svc monitoring-grafana -n monitoring -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' || true",
-                        returnStdout: true
-                    ).trim()
-
-                    PROM_URL = sh(
-                        script: "kubectl get svc monitoring-kube-prometheus-prometheus -n monitoring -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' || true",
-                        returnStdout: true
-                    ).trim()
-
-                    if (APP_URL && GRAFANA_URL && PROM_URL) {
-                        break
-                    }
-
-                    sleep 20
-                }
+                def APP_URL = sh(script: "kubectl get svc puzzle-game-service -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' || true", returnStdout: true).trim()
+                def GRAFANA_URL = sh(script: "kubectl get svc monitoring-grafana -n monitoring -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' || true", returnStdout: true).trim()
+                def PROM_URL = sh(script: "kubectl get svc monitoring-kube-prometheus-prometheus -n monitoring -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' || true", returnStdout: true).trim()
 
                 def DOCKER_IMAGE = "${DOCKER_USER}/${IMAGE_NAME}:${IMAGE_TAG}"
 
@@ -208,38 +188,15 @@ pipeline {
                     subject: "🚀 Deployment Successful - ${env.JOB_NAME} #${env.BUILD_NUMBER}",
                     mimeType: 'text/html',
                     body: """
-                    <html>
-                    <body style="font-family: Arial;">
+                    <h2>Deployment Successful</h2>
+                    <p><b>Project:</b> ${PROJECT_NAME}</p>
+                    <p><b>Docker:</b> ${DOCKER_IMAGE}</p>
 
-                    <h2 style="color:green;">🎉 Deployment Successful</h2>
+                    <p><a href="http://${APP_URL}">Application</a></p>
+                    <p><a href="http://${GRAFANA_URL}">Grafana</a></p>
+                    <p><a href="http://${PROM_URL}:9090">Prometheus</a></p>
 
-                    <h3>📌 Project Details</h3>
-                    <ul>
-                        <li><b>Project:</b> ${PROJECT_NAME}</li>
-                        <li><b>Cluster:</b> ${CLUSTER_NAME}</li>
-                    </ul>
-
-                    <h3>🐳 Docker Image</h3>
-                    <p>${DOCKER_IMAGE}</p>
-
-                    <h3>🌐 Application</h3>
-                    <a href="http://${APP_URL}">Open Application</a>
-
-                    <h3>📊 Grafana</h3>
-                    <a href="http://${GRAFANA_URL}">Open Grafana</a>
-
-                    <h3>🔥 Prometheus</h3>
-                    <a href="http://${PROM_URL}:9090">Open Prometheus</a>
-
-                    <h3>🛠 Jenkins</h3>
-                    <ul>
-                        <li>Job: ${env.JOB_NAME}</li>
-                        <li>Build: ${env.BUILD_NUMBER}</li>
-                        <li><a href="${env.BUILD_URL}">Open Build</a></li>
-                    </ul>
-
-                    </body>
-                    </html>
+                    <p><a href="${env.BUILD_URL}">Jenkins Build</a></p>
                     """,
                     to: "${env.RECIPIENTS}"
                 )
@@ -251,19 +208,8 @@ pipeline {
                 subject: "❌ Deployment Failed - ${env.JOB_NAME} #${env.BUILD_NUMBER}",
                 mimeType: 'text/html',
                 body: """
-                <html>
-                <body style="font-family: Arial;">
-
-                <h2 style="color:red;">❌ Deployment Failed</h2>
-
-                <p><b>Project:</b> Sliding Puzzle Game</p>
-                <p><b>Cluster:</b> mycluster</p>
-
-                <h3>🔍 Logs</h3>
-                <a href="${env.BUILD_URL}">View Build Logs</a>
-
-                </body>
-                </html>
+                <h2>Deployment Failed</h2>
+                <p><a href="${env.BUILD_URL}">Check Logs</a></p>
                 """,
                 to: "${env.RECIPIENTS}"
             )
